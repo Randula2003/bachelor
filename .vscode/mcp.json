@@ -1,0 +1,30 @@
+{
+	"servers": {
+		"shadcn-ui-mcp-server": {
+			"command": "/home/randula/.nvm/versions/node/v24.14.0/bin/npx",
+			"args": [
+				"@jpisnice/shadcn-ui-mcp-server",
+				"--github-api-key",
+				"${input:githubToken}"
+			],
+			"env": {
+				"PATH": "/home/randula/.nvm/versions/node/v24.14.0/bin:${env:PATH}",
+				"MCP_TRANSPORT_MODE": "${input:transportMode}",
+				"MCP_PORT": 7423
+			},
+			"type": "stdio"
+		}
+	},
+	"inputs": [
+		{
+			"id": "githubToken",
+			"type": "promptString",
+			"description": "GitHub Personal Access Token (optional)"
+		},
+		{
+			"id": "transportMode",
+			"type": "promptString",
+			"description": "Transport Mode (stdio/sse/dual)"
+		}
+	]
+}
