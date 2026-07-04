@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == uid;
+      allow update, delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /gigs/{gigId} {
+      allow read: if resource.data.status == "published"
+                  || (request.auth != null && request.auth.uid == resource.data.authorId);
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.authorId
+                    && isSeller(request.auth.uid);
+      allow update, delete: if request.auth != null
+                            && request.auth.uid == resource.data.authorId
+                            && (request.method == "delete"
+                                || request.resource.data.authorId == resource.data.authorId);
+    }
+
+    match /applications/{appId} {
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.applicantId
+                    && !isGigOwner(request.resource.data.gigId, request.auth.uid);
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.applicantId
+                      || isGigOwner(resource.data.gigId, request.auth.uid));
+      allow update: if request.auth != null
+                    && isGigOwner(resource.data.gigId, request.auth.uid);
+      allow delete: if false;
+    }
+
+    function isSeller(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data.role in ["seller", "both"];
+    }
+
+    function isGigOwner(gigId, uid) {
+      return get(/databases/$(database)/documents/gigs/$(gigId)).data.authorId == uid;
+    }
+  }
+}

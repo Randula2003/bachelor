@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { onAuthStateChanged, signOut, updateProfile, type User } from "firebase/auth"
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage"
+import { doc, serverTimestamp, updateDoc as updateFirestoreDoc } from "firebase/firestore"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -27,7 +28,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import { getFirebaseAuth, getFirebaseStorage } from "@/lib/firebase"
+import { getFirebaseAuth, getFirebaseFirestore, getFirebaseStorage } from "@/lib/firebase"
 
 const maxProfilePictureSize = 5 * 1024 * 1024
 
@@ -67,7 +68,6 @@ export default function AccountPage() {
         }
       })
     } catch {
-      setLoading(false)
       router.replace("/")
     }
 
@@ -101,6 +101,10 @@ export default function AccountPage() {
       const downloadUrl = await getDownloadURL(photoRef)
       const nextPhotoUrl = `${downloadUrl}&v=${Date.now()}`
       await updateProfile(user, { photoURL: nextPhotoUrl })
+      await updateFirestoreDoc(doc(getFirebaseFirestore(), "users", user.uid), {
+        photoURL: nextPhotoUrl,
+        updatedAt: serverTimestamp(),
+      })
       setPhotoUrl(nextPhotoUrl)
       window.dispatchEvent(new Event("profile-picture-updated"))
     } catch (error) {

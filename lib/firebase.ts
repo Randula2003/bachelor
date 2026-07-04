@@ -1,5 +1,6 @@
 import { getApp, getApps, initializeApp } from "firebase/app"
 import { getAuth } from "firebase/auth"
+import { getFirestore } from "firebase/firestore"
 import { getStorage } from "firebase/storage"
 
 const firebaseConfig = {
@@ -33,4 +34,13 @@ export function getFirebaseStorage() {
 
   const app = getApps().length ? getApp() : initializeApp(firebaseConfig)
   return getStorage(app)
+}
+
+export function getFirebaseFirestore() {
+  if (!isFirebaseConfigured) {
+    throw new Error("Firebase not configured.")
+  }
+
+  const app = getApps().length ? getApp() : initializeApp(firebaseConfig)
+  return getFirestore(app)
 }

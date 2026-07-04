@@ -268,7 +268,7 @@ export default function Home() {
               <Card className="mb-4 gap-4 border-primary/10 shadow-none" key={step.number}>
                 <CardHeader>
                   <Badge variant="secondary">{step.number}</Badge>
-                  <CardTitle className="mt-3 font-sans text-2xl">{step.title}</CardTitle>
+                  <CardTitle className="mt-3 text-2xl">{step.title}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <p className="max-w-xl leading-7 text-muted-foreground">{step.text}</p>

@@ -11,6 +11,7 @@ import {
 } from "firebase/auth"
 
 import { getFirebaseAuth } from "@/lib/firebase"
+import { ensureUserDoc } from "@/lib/users-service"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -69,11 +70,13 @@ export function LoginForm({
       const auth = getFirebaseAuth()
 
       if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password)
+        const credential = await signInWithEmailAndPassword(auth, email, password)
+        await ensureUserDoc(credential.user)
       } else {
         const credential = await createUserWithEmailAndPassword(auth, email, password)
         const name = String(formData.get("name") ?? "").trim()
         if (name) await updateProfile(credential.user, { displayName: name })
+        await ensureUserDoc(credential.user)
       }
 
       onAuthenticated?.()
@@ -89,7 +92,8 @@ export function LoginForm({
     setLoading(true)
 
     try {
-      await signInWithPopup(getFirebaseAuth(), new GoogleAuthProvider())
+      const credential = await signInWithPopup(getFirebaseAuth(), new GoogleAuthProvider())
+      await ensureUserDoc(credential.user)
       onAuthenticated?.()
     } catch (authError) {
       setError(getErrorMessage(authError))
