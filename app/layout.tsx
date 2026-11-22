@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist_Mono, Playfair_Display } from "next/font/google";
+import { AuthProvider } from "@/components/auth-provider";
 import { SiteHeader } from "@/components/site-header";
 import "./globals.css";
 import { cn } from "@/lib/utils";
@@ -37,8 +38,10 @@ export default function RootLayout({
       )}
     >
       <body className="min-h-full flex flex-col">
-        <SiteHeader />
-        {children}
+        <AuthProvider>
+          <SiteHeader />
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );

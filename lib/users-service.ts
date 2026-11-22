@@ -1,22 +1,16 @@
 import type { User } from "firebase/auth"
 import {
+  deleteField,
   doc,
   getDoc,
+  runTransaction,
   serverTimestamp,
-  setDoc,
   type DocumentData,
-  type Timestamp,
 } from "firebase/firestore"
 
 import { getFirebaseFirestore } from "@/lib/firebase"
-import type { SellerProfile, UserProfile, UserRole } from "@/lib/types"
-
-function toDate(value: unknown): Date {
-  if (value && typeof value === "object" && "toDate" in value) {
-    return (value as Timestamp).toDate()
-  }
-  return value instanceof Date ? value : new Date(0)
-}
+import { toDate } from "@/lib/firestore-utils"
+import type { SellerProfile, UserProfile } from "@/lib/types"
 
 function mapSellerProfile(value: DocumentData | null | undefined): SellerProfile | null {
   if (!value) return null
@@ -35,28 +29,56 @@ export function mapUserProfile(uid: string, data: DocumentData): UserProfile {
   return {
     uid,
     displayName: String(data.displayName ?? ""),
-    email: String(data.email ?? ""),
     photoURL: String(data.photoURL ?? ""),
-    role: (data.role ?? "buyer") as UserRole,
+    role: data.role === "seller" ? "seller" : "buyer",
     sellerProfile: mapSellerProfile(data.sellerProfile),
     createdAt: toDate(data.createdAt),
     updatedAt: data.updatedAt ? toDate(data.updatedAt) : undefined,
   }
 }
 
+/**
+ * Creates the public profile doc on first sign-in, or brings an existing one
+ * in line with Firebase Auth. User docs are readable by every signed-in user,
+ * so the email is deliberately not stored here; the signed-in user's own
+ * email comes from Firebase Auth.
+ *
+ * Runs in a transaction because sign-up calls this twice at nearly the same
+ * moment (the auth listener and the form). Without it both could see "missing"
+ * and the second create would land as an update the rules reject.
+ */
 export async function ensureUserDoc(user: User): Promise<void> {
-  const userRef = doc(getFirebaseFirestore(), "users", user.uid)
-  const snapshot = await getDoc(userRef)
-  if (snapshot.exists()) return
+  const db = getFirebaseFirestore()
+  const userRef = doc(db, "users", user.uid)
 
-  await setDoc(userRef, {
-    displayName: user.displayName ?? "",
-    email: user.email ?? "",
-    photoURL: user.photoURL ?? "",
-    role: "buyer",
-    sellerProfile: null,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(userRef)
+
+    if (!snapshot.exists()) {
+      transaction.set(userRef, {
+        displayName: user.displayName ?? "",
+        photoURL: user.photoURL ?? "",
+        role: "buyer",
+        sellerProfile: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+      return
+    }
+
+    const data = snapshot.data()
+    const patch: Record<string, unknown> = {}
+    // Sign-up sets the display name just after the account (and so this doc)
+    // already exists, which would otherwise leave the profile nameless.
+    if (user.displayName && data.displayName !== user.displayName) {
+      patch.displayName = user.displayName
+    }
+    // Older docs stored the email publicly; strip it.
+    if ("email" in data) patch.email = deleteField()
+
+    if (Object.keys(patch).length > 0) {
+      transaction.update(userRef, { ...patch, updatedAt: serverTimestamp() })
+    }
   })
 }
 

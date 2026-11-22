@@ -1,4 +1,5 @@
-export const gigs = [
+/** Example gigs written by scripts/seed-gigs.ts under the "system" author. */
+export const seedGigs = [
   {
     slug: "student-startup-visual-identity",
     title: "Design a visual identity for a student startup",
@@ -146,4 +147,4 @@ export const gigs = [
   },
 ] as const
 
-export type Gig = (typeof gigs)[number]
+export type SeedGig = (typeof seedGigs)[number]

@@ -12,17 +12,21 @@ import {
   updateDoc,
   where,
   type DocumentData,
-  type Timestamp,
 } from "firebase/firestore"
 
 import { getFirebaseFirestore } from "@/lib/firebase"
+import { toDate } from "@/lib/firestore-utils"
 import type { Gig } from "@/lib/types"
 
-function toDate(value: unknown): Date {
-  if (value && typeof value === "object" && "toDate" in value) {
-    return (value as Timestamp).toDate()
-  }
-  return value instanceof Date ? value : new Date(0)
+/**
+ * Author id of the seeded example gigs (scripts/seed-gigs.ts). No real person
+ * operates this account, so its gigs are shown but cannot be ordered or
+ * messaged; security rules enforce the same.
+ */
+export const SYSTEM_AUTHOR_ID = "system"
+
+export function isExampleGig(gig: Pick<Gig, "authorId">) {
+  return gig.authorId === SYSTEM_AUTHOR_ID
 }
 
 export function mapGig(id: string, data: DocumentData): Gig {

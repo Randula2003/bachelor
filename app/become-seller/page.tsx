@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { onAuthStateChanged, type User } from "firebase/auth"
 import { doc, serverTimestamp, updateDoc } from "firebase/firestore"
 
 import { AuthDialogTrigger } from "@/components/auth-dialog"
+import { useAuth } from "@/components/auth-provider"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,9 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { getFirebaseAuth, getFirebaseFirestore } from "@/lib/firebase"
-import { isAbortError } from "@/lib/errors"
-import { ensureUserDoc, fetchUserProfile } from "@/lib/users-service"
+import { getFirebaseFirestore } from "@/lib/firebase"
 
 function parseSkills(value: string) {
   return value.split(",").map((skill) => skill.trim()).filter(Boolean)
@@ -23,8 +21,7 @@ function parseSkills(value: string) {
 
 export default function BecomeSellerPage() {
   const router = useRouter()
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const { user, profile, loading, error: authError, refreshProfile } = useAuth()
   const [step, setStep] = useState(1)
   const [bio, setBio] = useState("")
   const [skillsText, setSkillsText] = useState("")
@@ -34,24 +31,11 @@ export default function BecomeSellerPage() {
   const [saving, setSaving] = useState(false)
   const skills = parseSkills(skillsText)
 
-  useEffect(() => onAuthStateChanged(getFirebaseAuth(), (currentUser) => {
-    setUser(currentUser)
-    void (async () => {
-      try {
-        if (currentUser) {
-          await ensureUserDoc(currentUser)
-          const profile = await fetchUserProfile(currentUser.uid)
-          if (profile?.role === "seller" || profile?.role === "both") {
-            router.replace("/seller/dashboard")
-            return
-          }
-        }
-        setLoading(false)
-      } catch (error) {
-        if (!isAbortError(error)) setError(error instanceof Error ? error.message : "Could not load profile.")
-      }
-    })()
-  }), [router])
+  const isSeller = profile?.role === "seller"
+
+  useEffect(() => {
+    if (isSeller) router.replace("/seller/dashboard")
+  }, [isSeller, router])
 
   function validate() {
     if (bio.trim().length < 50 || bio.trim().length > 500) {
@@ -64,6 +48,7 @@ export default function BecomeSellerPage() {
     if (new Set(skills.map((skill) => skill.toLowerCase())).size !== skills.length) {
       return "Remove duplicate skills."
     }
+    if (portfolio.length > 300) return "Portfolio URL must be 300 characters or fewer."
     if (portfolio) {
       try {
         new URL(portfolio)
@@ -99,7 +84,7 @@ export default function BecomeSellerPage() {
         },
         updatedAt: serverTimestamp(),
       })
-      window.dispatchEvent(new CustomEvent("user-role-updated", { detail: "seller" }))
+      await refreshProfile()
       router.push("/seller/dashboard")
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Could not create seller profile.")
@@ -108,7 +93,8 @@ export default function BecomeSellerPage() {
     }
   }
 
-  if (loading) return <main className="flex flex-1 items-center justify-center p-8">Loading...</main>
+  if (authError) return <main className="mx-auto max-w-xl px-5 py-16"><h1 className="text-3xl font-bold">Could not load your profile.</h1><p className="mt-3 text-muted-foreground">{authError}</p></main>
+  if (loading || isSeller) return <main className="flex flex-1 items-center justify-center p-8">Loading...</main>
 
   if (!user) {
     return (

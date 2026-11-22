@@ -1,7 +1,7 @@
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app"
 import { FieldValue, getFirestore } from "firebase-admin/firestore"
 
-import { gigs } from "../lib/gigs"
+import { seedGigs } from "./seed-data"
 
 if (!getApps().length) {
   initializeApp({ credential: applicationDefault() })
@@ -12,7 +12,6 @@ const db = getFirestore()
 async function seed() {
   await db.collection("users").doc("system").set({
     displayName: "Bachelor marketplace",
-    email: "",
     photoURL: "",
     role: "seller",
     sellerProfile: null,
@@ -23,7 +22,7 @@ async function seed() {
   const existing = await db.collection("gigs").get()
   const slugs = new Set(existing.docs.map((item) => String(item.data().slug)))
 
-  for (const gig of gigs) {
+  for (const gig of seedGigs) {
     if (slugs.has(gig.slug)) continue
     await db.collection("gigs").add({
       authorId: "system",

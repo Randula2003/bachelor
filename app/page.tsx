@@ -259,8 +259,8 @@ export default function Home() {
               Bachelor makes finding and hiring emerging talent simple, transparent,
               and rewarding for everyone involved.
             </p>
-            <Button className="mt-8" size="lg">
-              Post a project
+            <Button asChild className="mt-8" size="lg">
+              <Link href="/gigs">Browse gigs</Link>
             </Button>
           </div>
           <div>
@@ -295,13 +295,14 @@ export default function Home() {
               <Button asChild className="bg-foreground text-background hover:bg-foreground/90" size="lg">
                 <Link href="/gigs">Find student talent</Link>
               </Button>
-              <Button
+              <AuthDialogTrigger
                 className="border-primary-foreground/25 bg-transparent text-primary-foreground hover:bg-primary-foreground/10"
+                mode="signup"
                 size="lg"
                 variant="outline"
               >
                 Start freelancing
-              </Button>
+              </AuthDialogTrigger>
             </div>
           </CardContent>
         </Card>

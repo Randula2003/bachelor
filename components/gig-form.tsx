@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { getFirebaseAuth } from "@/lib/firebase"
+import { initials } from "@/lib/utils"
 import { createGig, updateGig } from "@/lib/gigs-service"
 import type { Gig, GigCategory, GigLevel, GigStatus, UserProfile } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
@@ -18,11 +19,15 @@ const levels: GigLevel[] = ["Beginner friendly", "Intermediate", "Advanced"]
 
 function generateSlug(title: string) {
   const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 6)
-  return `${title.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").slice(0, 60)}-${suffix}`
-}
-
-function initials(name: string) {
-  return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "U"
+  const base = title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/[\s-]+/g, "-")
+    .slice(0, 60)
+    .replace(/^-+|-+$/g, "")
+  // Titles with no latin letters or digits would otherwise produce "-abc123".
+  return `${base || "gig"}-${suffix}`
 }
 
 export function GigForm({
@@ -52,8 +57,9 @@ export function GigForm({
 
     if (title.trim().length < 10 || title.trim().length > 80) return setError("Title must be between 10 and 80 characters.")
     if (description.trim().length < 50 || description.trim().length > 500) return setError("Description must be between 50 and 500 characters.")
-    if (budgetNumber < 10 || budgetNumber > 10000) return setError("Budget must be between 10 and 10,000.")
-    if (dueDaysNumber < 1 || dueDaysNumber > 90) return setError("Due days must be between 1 and 90.")
+    // Written as positive range checks so an empty field (NaN) fails too. Mirrors firestore.rules.
+    if (!(budgetNumber >= 10 && budgetNumber <= 10000)) return setError("Budget must be between 10 and 10,000.")
+    if (!(Number.isInteger(dueDaysNumber) && dueDaysNumber >= 1 && dueDaysNumber <= 90)) return setError("Due days must be a whole number between 1 and 90.")
     if (skills.length < 1 || skills.length > 8) return setError("Add between 1 and 8 skills.")
     if (skills.some((skill) => skill.length < 2 || skill.length > 30)) return setError("Each skill must be between 2 and 30 characters.")
     if (new Set(skills.map((skill) => skill.toLowerCase())).size !== skills.length) return setError("Remove duplicate skills.")
@@ -109,7 +115,7 @@ export function GigForm({
           <div className="space-y-2"><Label>Category</Label><Select onValueChange={(value) => setCategory(value as GigCategory)} value={category}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{categories.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></div>
           <div className="space-y-2"><Label>Level</Label><Select onValueChange={(value) => setLevel(value as GigLevel)} value={level}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{levels.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></div>
           <div className="space-y-2"><Label htmlFor="budget">Budget</Label><Input id="budget" min={10} max={10000} onChange={(event) => setBudget(event.target.value)} type="number" value={budget} /></div>
-          <div className="space-y-2"><Label htmlFor="dueDays">Due in days</Label><Input id="dueDays" min={1} max={90} onChange={(event) => setDueDays(event.target.value)} type="number" value={dueDays} /></div>
+          <div className="space-y-2"><Label htmlFor="dueDays">Due in days</Label><Input id="dueDays" min={1} max={90} step={1} onChange={(event) => setDueDays(event.target.value)} type="number" value={dueDays} /></div>
         </div>
         <div className="space-y-2"><Label htmlFor="skills">Skills</Label><Input id="skills" onChange={(event) => setSkillsText(event.target.value)} placeholder="Figma, Branding, Illustration" value={skillsText} /><p className="text-xs text-muted-foreground">Separate up to 8 skills with commas.</p></div>
         {existingGig ? <Badge variant="secondary">Current status: {existingGig.status}</Badge> : null}

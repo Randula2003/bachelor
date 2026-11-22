@@ -1,44 +1,25 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { onAuthStateChanged } from "firebase/auth"
 
-import { getFirebaseAuth } from "@/lib/firebase"
-import { isAbortError } from "@/lib/errors"
-import type { UserProfile } from "@/lib/types"
-import { ensureUserDoc, fetchUserProfile } from "@/lib/users-service"
+import { useAuth } from "@/components/auth-provider"
+import { openAuthDialog } from "@/lib/auth-dialog-events"
 
 export function useSellerGuard() {
   const router = useRouter()
-  const [loading, setLoading] = useState(true)
-  const [isSeller, setIsSeller] = useState(false)
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const { user, profile, loading, error } = useAuth()
+  const isSeller = profile?.role === "seller"
 
   useEffect(() => {
-    return onAuthStateChanged(getFirebaseAuth(), (user) => {
-      if (!user) {
-        router.replace("/")
-        setLoading(false)
-        return
-      }
+    if (loading || error) return
+    if (!user) {
+      router.replace("/")
+      openAuthDialog("login")
+      return
+    }
+    if (!isSeller) router.replace("/become-seller")
+  }, [error, isSeller, loading, router, user])
 
-      void (async () => {
-        try {
-          await ensureUserDoc(user)
-          const profile = await fetchUserProfile(user.uid)
-          const seller = profile?.role === "seller" || profile?.role === "both"
-          setUserProfile(profile)
-          setIsSeller(seller)
-          setLoading(false)
-
-          if (!seller) router.replace("/become-seller")
-        } catch (error) {
-          if (!isAbortError(error)) console.error(error)
-        }
-      })()
-    })
-  }, [router])
-
-  return { loading, isSeller, userProfile }
+  return { loading, isSeller, userProfile: profile, error }
 }

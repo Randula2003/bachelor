@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -13,10 +13,19 @@ import {
   Star,
   UserRound,
 } from "lucide-react"
-import { onAuthStateChanged, signOut, updateProfile, type User } from "firebase/auth"
+import { signOut, updateProfile } from "firebase/auth"
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage"
-import { doc, serverTimestamp, updateDoc as updateFirestoreDoc } from "firebase/firestore"
+import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "firebase/firestore"
 
+import { useRequireAuth } from "@/components/auth-provider"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -28,55 +37,61 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { isAbortError } from "@/lib/errors"
 import { getFirebaseAuth, getFirebaseFirestore, getFirebaseStorage } from "@/lib/firebase"
+import { mapOrder, orderStatusLabels } from "@/lib/orders-service"
+import type { Order } from "@/lib/types"
+import { initials } from "@/lib/utils"
 
 const maxProfilePictureSize = 5 * 1024 * 1024
+const activeStatuses: Order["status"][] = ["pending_payment", "in_progress", "delivered"]
 
-function getInitials(user: User) {
-  if (user.displayName) {
-    return user.displayName
-      .split(" ")
-      .map((part) => part[0])
-      .join("")
-      .slice(0, 2)
-      .toUpperCase()
-  }
-
-  return user.email?.slice(0, 2).toUpperCase() ?? "U"
+/** Orders where this user is the buyer or the seller, newest activity first. */
+async function fetchMyOrders(uid: string): Promise<Order[]> {
+  const orders = collection(getFirebaseFirestore(), "orders")
+  const [bought, sold] = await Promise.all([
+    getDocs(query(orders, where("buyerId", "==", uid))),
+    getDocs(query(orders, where("sellerId", "==", uid))),
+  ])
+  return [...bought.docs, ...sold.docs]
+    .map((item) => mapOrder(item.id, item.data()))
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
 }
 
 export default function AccountPage() {
   const router = useRouter()
-  const [loading, setLoading] = useState(true)
-  const [user, setUser] = useState<User | null>(null)
-  const [photoUrl, setPhotoUrl] = useState<string | null>(null)
+  const { user, profile, loading, refreshProfile } = useRequireAuth()
   const [photoError, setPhotoError] = useState("")
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [orders, setOrders] = useState<Order[]>([])
+  const [ordersError, setOrdersError] = useState("")
 
   useEffect(() => {
-    let unsubscribe = () => {}
-
-    try {
-      unsubscribe = onAuthStateChanged(getFirebaseAuth(), (currentUser) => {
-        setUser(currentUser)
-        setPhotoUrl(currentUser?.photoURL ?? null)
-        setLoading(false)
-
-        if (!currentUser) {
-          router.replace("/")
-          window.dispatchEvent(new CustomEvent("open-auth-dialog", { detail: "login" }))
-        }
+    if (!user) return
+    let active = true
+    fetchMyOrders(user.uid)
+      .then((items) => {
+        if (active) setOrders(items)
       })
-    } catch {
-      router.replace("/")
+      .catch((error) => {
+        if (!active || isAbortError(error)) return
+        setOrdersError(error instanceof Error ? error.message : "Could not load activity.")
+      })
+    return () => {
+      active = false
     }
+  }, [user])
 
-    return unsubscribe
-  }, [router])
+  const stats = useMemo(() => {
+    const seller = profile?.sellerProfile
+    return {
+      active: orders.filter((order) => activeStatuses.includes(order.status)).length,
+      completed: orders.filter((order) => order.status === "completed").length,
+      rating: seller && seller.reviewCount > 0 ? seller.rating.toFixed(1) : "New",
+    }
+  }, [orders, profile])
 
-  async function handleProfilePictureChange(
-    event: React.ChangeEvent<HTMLInputElement>
-  ) {
+  async function handleProfilePictureChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ""
 
@@ -101,16 +116,13 @@ export default function AccountPage() {
       const downloadUrl = await getDownloadURL(photoRef)
       const nextPhotoUrl = `${downloadUrl}&v=${Date.now()}`
       await updateProfile(user, { photoURL: nextPhotoUrl })
-      await updateFirestoreDoc(doc(getFirebaseFirestore(), "users", user.uid), {
+      await updateDoc(doc(getFirebaseFirestore(), "users", user.uid), {
         photoURL: nextPhotoUrl,
         updatedAt: serverTimestamp(),
       })
-      setPhotoUrl(nextPhotoUrl)
-      window.dispatchEvent(new Event("profile-picture-updated"))
+      await refreshProfile()
     } catch (error) {
-      setPhotoError(
-        error instanceof Error ? error.message : "Could not update profile picture."
-      )
+      setPhotoError(error instanceof Error ? error.message : "Could not update profile picture.")
     } finally {
       setUploadingPhoto(false)
     }
@@ -124,6 +136,8 @@ export default function AccountPage() {
     )
   }
 
+  const photoUrl = profile?.photoURL || user.photoURL
+  const isSeller = profile?.role === "seller"
   const joinedDate = user.metadata.creationTime
     ? new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(
         new Date(user.metadata.creationTime)
@@ -163,7 +177,7 @@ export default function AccountPage() {
                     <AvatarImage alt={user.displayName || "Profile picture"} src={photoUrl} />
                   ) : null}
                   <AvatarFallback className="text-2xl font-semibold">
-                    {getInitials(user)}
+                    {initials(user.displayName, user.email?.slice(0, 2).toUpperCase() || "U")}
                   </AvatarFallback>
                 </Avatar>
                 <label
@@ -213,9 +227,9 @@ export default function AccountPage() {
           <div className="space-y-6">
             <div className="grid gap-4 sm:grid-cols-3">
               {[
-                { label: "Active projects", value: "0", icon: BriefcaseBusiness },
-                { label: "Completed gigs", value: "0", icon: CheckCircle2 },
-                { label: "Average rating", value: "New", icon: Star },
+                { label: "Active orders", value: String(stats.active), icon: BriefcaseBusiness },
+                { label: "Completed orders", value: String(stats.completed), icon: CheckCircle2 },
+                { label: "Seller rating", value: stats.rating, icon: Star },
               ].map(({ icon: Icon, label, value }) => (
                 <Card className="gap-3 shadow-none" key={label}>
                   <CardHeader>
@@ -231,8 +245,9 @@ export default function AccountPage() {
               <CardHeader>
                 <CardTitle className="font-sans">Get started</CardTitle>
                 <CardDescription>
-                  Your account is ready. Explore available opportunities or complete
-                  your profile.
+                  {isSeller
+                    ? "Manage your gigs and the orders buyers have placed with you."
+                    : "Explore available opportunities or set up a seller profile to offer your own."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid gap-3 sm:grid-cols-2">
@@ -242,9 +257,11 @@ export default function AccountPage() {
                     Browse gigs
                   </Link>
                 </Button>
-                <Button size="lg" variant="outline">
-                  <UserRound className="size-4" />
-                  Complete profile
+                <Button asChild size="lg" variant="outline">
+                  <Link href={isSeller ? "/seller/dashboard" : "/become-seller"}>
+                    <UserRound className="size-4" />
+                    {isSeller ? "Seller dashboard" : "Set up seller profile"}
+                  </Link>
                 </Button>
               </CardContent>
             </Card>
@@ -252,14 +269,37 @@ export default function AccountPage() {
             <Card className="gap-5 shadow-none">
               <CardHeader>
                 <CardTitle className="font-sans">Recent activity</CardTitle>
-                <CardDescription>Your latest account activity will appear here.</CardDescription>
+                <CardDescription>Orders you have placed or received.</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="rounded-lg bg-muted p-8 text-center">
-                  <p className="text-sm font-medium">No activity yet</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Browse gigs to start building your activity.
-                  </p>
+                {ordersError ? <p className="text-sm text-destructive">{ordersError}</p> : null}
+                {!ordersError && orders.length === 0 ? (
+                  <div className="rounded-lg bg-muted p-8 text-center">
+                    <p className="text-sm font-medium">No activity yet</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Browse gigs to start building your activity.
+                    </p>
+                  </div>
+                ) : null}
+                <div className="space-y-1">
+                  {orders.slice(0, 5).map((order) => {
+                    const bought = order.buyerId === user.uid
+                    return (
+                      <Link
+                        className="flex items-center justify-between gap-4 border-b p-3 last:border-0 hover:bg-muted/60"
+                        href={bought ? "/orders" : "/seller/dashboard"}
+                        key={order.id}
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{order.gigTitle}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {bought ? `Bought from ${order.sellerName}` : `Sold to ${order.buyerName || "a buyer"}`} · ${order.amount}
+                          </p>
+                        </div>
+                        <Badge variant="secondary">{orderStatusLabels[order.status]}</Badge>
+                      </Link>
+                    )
+                  })}
                 </div>
               </CardContent>
             </Card>

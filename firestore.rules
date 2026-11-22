@@ -1,43 +1,304 @@
 rules_version = '2';
 
+// There is no server in this app: every write comes straight from a browser,
+// so these rules are the only thing standing between a tampered client and the
+// data. Every create pins its exact field list, timestamps must be the server's
+// own clock (request.time), and anything a user should not control (ratings,
+// verification, prices, payment state) is either fixed or copied from a
+// document the user cannot edit.
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------- users
+    // Profiles are public to signed-in users, so they hold no private data
+    // (the email lives only in Firebase Auth).
     match /users/{uid} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null && request.auth.uid == uid;
-      allow update, delete: if request.auth != null && request.auth.uid == uid;
-    }
 
-    match /gigs/{gigId} {
-      allow read: if resource.data.status == "published"
-                  || (request.auth != null && request.auth.uid == resource.data.authorId);
       allow create: if request.auth != null
-                    && request.auth.uid == request.resource.data.authorId
-                    && isSeller(request.auth.uid);
-      allow update, delete: if request.auth != null
-                            && request.auth.uid == resource.data.authorId
-                            && (request.method == "delete"
-                                || request.resource.data.authorId == resource.data.authorId);
-    }
+                    && request.auth.uid == uid
+                    && request.resource.data.keys().hasOnly(
+                         ["displayName", "photoURL", "role", "sellerProfile", "createdAt", "updatedAt"])
+                    && request.resource.data.displayName is string
+                    && request.resource.data.photoURL is string
+                    && request.resource.data.role == "buyer"
+                    && request.resource.data.sellerProfile == null
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.updatedAt == request.time;
 
-    match /applications/{appId} {
-      allow create: if request.auth != null
-                    && request.auth.uid == request.resource.data.applicantId
-                    && !isGigOwner(request.resource.data.gigId, request.auth.uid);
-      allow read: if request.auth != null
-                  && (request.auth.uid == resource.data.applicantId
-                      || isGigOwner(resource.data.gigId, request.auth.uid));
       allow update: if request.auth != null
-                    && isGigOwner(resource.data.gigId, request.auth.uid);
-      allow delete: if false;
+                    && request.auth.uid == uid
+                    && isValidUserUpdate(resource.data, request.resource.data);
+
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    function isValidUserUpdate(before, after) {
+      let changed = after.diff(before).affectedKeys();
+      return changed.hasOnly(["displayName", "photoURL", "role", "sellerProfile", "updatedAt", "email"])
+             // "email" may only be touched to remove it (legacy docs stored it publicly).
+             && (!changed.hasAny(["email"]) || !("email" in after))
+             && after.displayName is string
+             && after.photoURL is string
+             && after.updatedAt == request.time
+             && after.role in ["buyer", "seller"]
+             && (after.role == "buyer" || after.sellerProfile != null)
+             && isValidSellerProfile(before.get("sellerProfile", null), after.get("sellerProfile", null));
+    }
+
+    // Users write their own bio and skills, but verification and rating are
+    // earned, not self-declared: a new seller profile starts unverified at 0,
+    // and later edits must leave those fields as they were.
+    function isValidSellerProfile(prev, next) {
+      return next == null
+             || (next.keys().hasOnly(
+                   ["bio", "skills", "portfolio", "verified", "rating", "reviewCount", "createdAt"])
+                 && next.bio is string && next.bio.size() <= 500
+                 && next.skills is list && next.skills.size() <= 10
+                 && next.portfolio is string && next.portfolio.size() <= 300
+                 && ((prev == null
+                      && next.verified == false
+                      && next.rating == 0
+                      && next.reviewCount == 0)
+                     || (prev != null
+                         && next.verified == prev.get("verified", false)
+                         && next.rating == prev.get("rating", 0)
+                         && next.reviewCount == prev.get("reviewCount", 0))));
     }
 
     function isSeller(uid) {
-      return get(/databases/$(database)/documents/users/$(uid)).data.role in ["seller", "both"];
+      return get(/databases/$(database)/documents/users/$(uid)).data.role == "seller";
     }
 
-    function isGigOwner(gigId, uid) {
-      return get(/databases/$(database)/documents/gigs/$(gigId)).data.authorId == uid;
+    // ----------------------------------------------------------------- gigs
+    match /gigs/{gigId} {
+      allow read: if resource == null
+                  || resource.data.status == "published"
+                  || (request.auth != null && request.auth.uid == resource.data.authorId);
+
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.authorId
+                    && isSeller(request.auth.uid)
+                    && request.resource.data.keys().hasOnly(gigFields())
+                    && isValidGigContent(request.resource.data)
+                    && request.resource.data.status in ["draft", "published"]
+                    && request.resource.data.slug is string
+                    && request.resource.data.slug.size() > 0
+                    && request.resource.data.slug.size() <= 80
+                    && request.resource.data.thumbnailPosition is string
+                    && request.resource.data.rating == 0
+                    && request.resource.data.reviewCount == 0
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.updatedAt == request.time;
+
+      // Ratings, slug, author and creation time are fixed once the gig exists.
+      allow update: if request.auth != null
+                    && request.auth.uid == resource.data.authorId
+                    && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+                         ["authorId", "slug", "thumbnailPosition", "rating", "reviewCount", "createdAt"])
+                    && request.resource.data.keys().hasOnly(gigFields())
+                    && isValidGigContent(request.resource.data)
+                    && request.resource.data.status in ["draft", "published", "paused", "closed"]
+                    && request.resource.data.updatedAt == request.time;
+
+      allow delete: if request.auth != null && request.auth.uid == resource.data.authorId;
+    }
+
+    function gigFields() {
+      return ["authorId", "authorName", "authorInitials", "title", "description", "category",
+              "budget", "deadline", "dueDays", "level", "skills", "status", "slug",
+              "thumbnailPosition", "rating", "reviewCount", "createdAt", "updatedAt"];
+    }
+
+    // Mirrors the validation in components/gig-form.tsx.
+    function isValidGigContent(gig) {
+      return gig.authorName is string && gig.authorName.size() <= 100
+             && gig.authorInitials is string && gig.authorInitials.size() <= 2
+             && gig.title is string && gig.title.size() >= 10 && gig.title.size() <= 80
+             && gig.description is string && gig.description.size() >= 50 && gig.description.size() <= 500
+             && gig.category in ["Design", "Development", "Research", "Marketing", "Writing"]
+             && gig.level in ["Beginner friendly", "Intermediate", "Advanced"]
+             && gig.budget is number && gig.budget >= 10 && gig.budget <= 10000
+             && gig.dueDays is int && gig.dueDays >= 1 && gig.dueDays <= 90
+             && gig.deadline is string && gig.deadline.size() <= 40
+             && gig.skills is list && gig.skills.size() >= 1 && gig.skills.size() <= 8;
+    }
+
+    function gigData(gigId) {
+      return get(/databases/$(database)/documents/gigs/$(gigId)).data;
+    }
+
+    // --------------------------------------------------------------- orders
+    match /orders/{orderId} {
+      // The buyer is the only party who may open an order. Price, delivery
+      // time, titles and seller are all copied from the gig document and
+      // re-checked here, and the order must start unpaid. Without this a
+      // tampered client could buy a $420 gig for $1.
+      allow create: if request.auth != null
+                    && request.resource.data.keys().hasOnly(
+                         ["gigId", "gigSlug", "gigTitle", "sellerId", "sellerName", "buyerId",
+                          "buyerName", "buyerEmail", "requirements", "amount", "dueDays", "status",
+                          "paymentStatus", "paymentRef", "createdAt", "updatedAt"])
+                    && request.resource.data.gigId is string
+                    && isValidNewOrder(request.resource.data, gigData(request.resource.data.gigId));
+
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.buyerId
+                      || request.auth.uid == resource.data.sellerId);
+
+      // Fulfillment only. No client may touch amount, paymentStatus,
+      // paymentRef, or the party ids — that is the payment gateway's seam, and
+      // it will run server-side with the Admin SDK, which bypasses these rules.
+      allow update: if request.auth != null
+                    && request.resource.data.diff(resource.data)
+                         .affectedKeys().hasOnly(["status", "updatedAt"])
+                    && request.resource.data.updatedAt == request.time
+                    && isAllowedOrderTransition(resource.data, request.resource.data.status);
+
+      allow delete: if false;
+    }
+
+    function isValidNewOrder(order, gig) {
+      return order.buyerId == request.auth.uid
+             && order.sellerId == gig.authorId
+             && order.sellerId != request.auth.uid
+             && order.sellerId != "system"
+             && gig.status == "published"
+             && order.amount == gig.budget
+             && order.dueDays == gig.dueDays
+             && order.gigTitle == gig.title
+             && order.gigSlug == gig.slug
+             && order.sellerName == gig.authorName
+             && order.buyerName is string && order.buyerName.size() <= 100
+             && order.buyerEmail == request.auth.token.get("email", "")
+             && order.requirements is string
+             && order.requirements.size() >= 20
+             && order.requirements.size() <= 1000
+             && order.status == "pending_payment"
+             && order.paymentStatus == "pending"
+             && order.paymentRef == null
+             && order.createdAt == request.time
+             && order.updatedAt == request.time;
+    }
+
+    // The order lifecycle, one step at a time:
+    //   seller: pending_payment -> in_progress -> delivered
+    //           pending_payment | in_progress -> cancelled
+    //   buyer:  delivered -> completed
+    //           pending_payment -> cancelled (only while unpaid)
+    // TODO(payments): once a gateway is wired up, require
+    // order.paymentStatus == "paid" for the seller's move to "in_progress".
+    function isAllowedOrderTransition(order, next) {
+      let from = order.status;
+      return (request.auth.uid == order.sellerId
+              && ((from == "pending_payment" && next in ["in_progress", "cancelled"])
+                  || (from == "in_progress" && next in ["delivered", "cancelled"])))
+             || (request.auth.uid == order.buyerId
+                 && ((from == "delivered" && next == "completed")
+                     || (from == "pending_payment" && next == "cancelled"
+                         && order.paymentStatus == "pending")));
+    }
+
+    // -------------------------------------------------------- conversations
+    match /conversations/{conversationId} {
+      // The id must be the two participant uids sorted and joined, which is what
+      // keeps one thread per pair. A client cannot park a thread at an arbitrary
+      // id or add itself to someone else's conversation.
+      allow create: if request.auth != null
+                    && isValidNewConversation(conversationId, request.resource.data);
+
+      // resource is null when the document does not exist. Checking for a thread
+      // before creating one is a read of a missing doc, so without this guard
+      // isParticipant() dereferences null and the rule denies instead of
+      // reporting "not found". Never reached by list queries.
+      allow read: if resource == null || isParticipant(resource.data);
+
+      // Participants may only (a) mark the thread read for themselves, or
+      // (b) bump the preview in the same batch as the message it describes.
+      // The participant list and gig context are fixed at creation.
+      allow update: if isParticipant(resource.data)
+                    && (isOwnReadReceipt() || isPreviewOfNewMessage(conversationId));
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isConversationParticipant(conversationId);
+        allow create: if isConversationParticipant(conversationId)
+                      && request.resource.data.keys().hasOnly(["senderId", "body", "createdAt"])
+                      && request.auth.uid == request.resource.data.senderId
+                      && request.resource.data.body is string
+                      && request.resource.data.body.size() > 0
+                      && request.resource.data.body.size() <= 2000
+                      && request.resource.data.createdAt == request.time;
+        // Messages are a record of what was said; nobody rewrites history.
+        allow update, delete: if false;
+      }
+    }
+
+    function isValidNewConversation(conversationId, convo) {
+      let ids = convo.participantIds;
+      return convo.keys().hasOnly(
+               ["participantIds", "participants", "gigId", "gigTitle", "gigSlug", "lastMessage",
+                "lastSenderId", "lastMessageAt", "lastReadAt", "createdAt"])
+             && ids is list
+             && ids.size() == 2
+             && request.auth.uid in ids
+             && !("system" in ids)
+             && ids[0] < ids[1]
+             && conversationId == ids[0] + "_" + ids[1]
+             && convo.participants.keys().hasOnly(ids)
+             && convo.participants.size() == 2
+             && matchesProfile(convo.participants[ids[0]], ids[0])
+             && matchesProfile(convo.participants[ids[1]], ids[1])
+             && convo.lastMessage == ""
+             && convo.lastSenderId == ""
+             && convo.lastReadAt.size() == 0
+             && convo.lastMessageAt == request.time
+             && convo.createdAt == request.time
+             && ((convo.gigId == null && convo.gigTitle == null && convo.gigSlug == null)
+                 || (convo.gigId is string
+                     && convo.gigTitle == gigData(convo.gigId).title
+                     && convo.gigSlug == gigData(convo.gigId).slug));
+    }
+
+    // Denormalized names and photos must be copies of the users' own profiles,
+    // so the creator of a thread cannot misname either side.
+    function matchesProfile(entry, uid) {
+      let profile = get(/databases/$(database)/documents/users/$(uid)).data;
+      return entry.keys().hasOnly(["name", "photoURL"])
+             && entry.name == profile.get("displayName", "")
+             && entry.photoURL == profile.get("photoURL", "");
+    }
+
+    function isOwnReadReceipt() {
+      let after = request.resource.data;
+      return after.diff(resource.data).affectedKeys().hasOnly(["lastReadAt"])
+             && after.lastReadAt.diff(resource.data.lastReadAt).affectedKeys()
+                  .hasOnly([request.auth.uid])
+             && after.lastReadAt[request.auth.uid] == request.time;
+    }
+
+    function isPreviewOfNewMessage(conversationId) {
+      let after = request.resource.data;
+      let message = getAfter(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(after.lastMessageId)).data;
+      return after.diff(resource.data).affectedKeys()
+               .hasOnly(["lastMessage", "lastSenderId", "lastMessageAt", "lastMessageId"])
+             && after.lastSenderId == request.auth.uid
+             && after.lastMessageAt == request.time
+             && message.senderId == request.auth.uid
+             && message.body == after.lastMessage;
+    }
+
+    function isParticipant(data) {
+      return request.auth != null && request.auth.uid in data.participantIds;
+    }
+
+    function isConversationParticipant(conversationId) {
+      return request.auth != null
+             && request.auth.uid in
+                get(/databases/$(database)/documents/conversations/$(conversationId))
+                  .data.participantIds;
     }
   }
 }

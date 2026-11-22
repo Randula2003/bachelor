@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# env files (Firebase config and any future secrets stay local)
+.env*
+
 # debug
 npm-debug.log*
 yarn-debug.log*
